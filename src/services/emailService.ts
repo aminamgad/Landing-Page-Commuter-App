@@ -11,8 +11,18 @@ interface SubscriptionResponse {
 }
 
 class EmailService {
-  private readonly API_ENDPOINT = 'https://formspree.io/f/mrbkklya'; // Replace with your Formspree form ID
-  private readonly CONFIRMATION_ENDPOINT = 'https://formspree.io/f/mrbkklya'; // Replace with confirmation form ID
+  private readonly API_ENDPOINT: string;
+  private readonly CONFIRMATION_ENDPOINT: string;
+  private readonly ADMIN_NOTIFICATION_ENDPOINT: string;
+  private readonly ADMIN_EMAIL: string;
+  
+  constructor() {
+    // Use environment variables with fallbacks
+    this.API_ENDPOINT = `https://formspree.io/f/${import.meta.env.VITE_FORMSPREE_SUBSCRIPTION_FORM_ID || 'YOUR_FORM_ID'}`;
+    this.CONFIRMATION_ENDPOINT = `https://formspree.io/f/${import.meta.env.VITE_FORMSPREE_CONFIRMATION_FORM_ID || 'YOUR_CONFIRMATION_FORM_ID'}`;
+    this.ADMIN_NOTIFICATION_ENDPOINT = `https://formspree.io/f/${import.meta.env.VITE_FORMSPREE_ADMIN_FORM_ID || 'YOUR_ADMIN_FORM_ID'}`;
+    this.ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL || 'admin@commuter.app';
+  }
   
   async subscribeToNotifications(email: string): Promise<SubscriptionResponse> {
     try {
@@ -47,8 +57,11 @@ class EmailService {
         throw new Error(`Subscription failed! status: ${subscriptionResponse.status}`);
       }
 
-      // Send immediate confirmation email to the user
-      await this.sendConfirmationEmail(subscriptionData.email);
+      // Send confirmation email to user and admin notification in parallel
+      await Promise.allSettled([
+        this.sendConfirmationEmail(subscriptionData.email),
+        this.sendAdminNotification(subscriptionData)
+      ]);
       
       // Store subscription locally for analytics
       this.storeSubscriptionLocally(subscriptionData);
@@ -124,6 +137,55 @@ This email was sent because you subscribed to Commuter updates at our landing pa
     }
   }
 
+  private async sendAdminNotification(subscriptionData: EmailSubscription): Promise<void> {
+    try {
+      const stats = this.getSubscriptionStats();
+      const adminResponse = await fetch(this.ADMIN_NOTIFICATION_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          email: this.ADMIN_EMAIL,
+          subject: '🎉 New Commuter Subscription Alert!',
+          message: `
+🚗 NEW SUBSCRIPTION ALERT 🚗
+
+A new user has subscribed to Commuter updates!
+
+📧 Email: ${subscriptionData.email}
+📅 Date: ${subscriptionData.timestamp.toLocaleString()}
+🌐 Source: ${subscriptionData.source}
+📊 Total Subscriptions: ${stats.total + 1}
+📈 Recent (24h): ${stats.recent + 1}
+
+User Details:
+- Subscription Time: ${subscriptionData.timestamp.toISOString()}
+- User Agent: ${navigator.userAgent || 'Unknown'}
+- Referrer: ${document.referrer || 'Direct'}
+
+Dashboard: ${import.meta.env.VITE_APP_URL || 'https://commuter.app'}
+
+---
+Commuter Admin Notifications
+Made with ❤️ in Egypt
+          `,
+          timestamp: subscriptionData.timestamp.toISOString(),
+          userEmail: subscriptionData.email,
+          subscriptionCount: stats.total + 1
+        })
+      });
+
+      if (!adminResponse.ok) {
+        console.warn('Admin notification failed to send');
+      }
+    } catch (error) {
+      console.warn('Could not send admin notification:', error);
+      // Don't throw error here - subscription was successful even if admin notification fails
+    }
+  }
+
   private isValidEmail(email: string): boolean {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
@@ -160,6 +222,24 @@ This email was sent because you subscribed to Commuter updates at our landing pa
     return {
       total: subscriptions.length,
       recent: recentSubscriptions.length
+    };
+  }
+
+  // Method to get environment configuration status
+  getConfigurationStatus(): { configured: boolean; missing: string[] } {
+    const requiredEnvVars = [
+      'VITE_FORMSPREE_SUBSCRIPTION_FORM_ID',
+      'VITE_FORMSPREE_CONFIRMATION_FORM_ID',
+      'VITE_FORMSPREE_ADMIN_FORM_ID'
+    ];
+
+    const missing = requiredEnvVars.filter(envVar => 
+      !import.meta.env[envVar] || import.meta.env[envVar].includes('YOUR_')
+    );
+
+    return {
+      configured: missing.length === 0,
+      missing
     };
   }
 }
